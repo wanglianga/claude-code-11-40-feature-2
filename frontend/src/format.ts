@@ -104,9 +104,27 @@ export function actionLabel(action: string): string {
     'certificate.reissued': '重新签发证书',
     'record.revised': '修订档案记录',
     'determination.revised': '修订物种判读',
+    'determination.revoked': '撤销物种判读',
     'trend_reference.created': '登记趋势引用',
     'trend_reference.revoked': '撤回趋势引用',
     'reading_conflict.resolved': '处置判读冲突',
+    'trend_analysis.created': '创建趋势分析',
+    'trend_analysis.recomputed': '重算趋势分析',
+    'trend_analysis.marked_stale': '趋势分析标记待重算',
+    'unit.maintenance_log_applied': '维护日志回传单元',
+    'station.migration_date_corrected': '纠正迁点日期',
   }
   return map[action] || action
+}
+
+export const TREND_FACTOR_LABEL: Record<string, string> = {
+  coverage: '覆盖',
+  effort: '努力量',
+  interpretation: '判读',
+}
+
+export const POINT_ROLE_LABEL: Record<string, string> = {
+  core: '连续固定点',
+  expansion: '样线扩充点',
+  exploration: '新增探索点',
 }

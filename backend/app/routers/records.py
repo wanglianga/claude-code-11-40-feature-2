@@ -39,11 +39,13 @@ from ..services import (
     DomainError,
     add_determination,
     create_trend_reference,
+    handle_maintenance_log,
     ingest_record,
     reissue_unit_certificate,
     resolve_conflict,
     revise_determination,
     revise_record,
+    revoke_determination,
     revoke_trend_reference,
 )
 
@@ -101,8 +103,12 @@ def create_record(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(422, f"时间格式无效：{exc}") from exc
+    changed_units = handle_maintenance_log(db, record, user.username)
     db.commit()
-    return record_out(record, include_revisions=True)
+    result = record_out(record, include_revisions=True)
+    if record.record_type == "downtime_log":
+        result["effort_affected_units"] = changed_units
+    return result
 
 
 @router.get("/records/{record_id}")
@@ -143,9 +149,12 @@ def revise(
     except DomainError as exc:
         db.rollback()
         raise HTTPException(exc.status_code, exc.message) from exc
+    changed_units = handle_maintenance_log(db, record, user.username)
     db.commit()
     data_out = record_out(record, include_revisions=True)
     data_out["previous_payload"] = previous_payload
+    if record.record_type == "downtime_log":
+        data_out["effort_affected_units"] = changed_units
     return data_out
 
 
@@ -204,6 +213,28 @@ def _current_cert(db: Session, unit_id: int) -> Certificate:
     if cert is None:
         raise HTTPException(409, "该单元无证书")
     return cert
+
+
+@router.post("/determinations/{determination_id}/revoke")
+def revoke_det(
+    determination_id: int,
+    data: RevokeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("researcher", "auditor")),
+):
+    try:
+        det, units = revoke_determination(
+            db, determination_id, reason=data.reason, actor=user.username
+        )
+    except DomainError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, exc.message) from exc
+    db.commit()
+    return {
+        "determination": determination_out(det),
+        "units_under_review": [u.id for u in units],
+        "certificates": [certificate_out(_current_cert(db, u.id)) for u in units],
+    }
 
 
 @router.post("/units/{unit_id}/certificates/reissue")

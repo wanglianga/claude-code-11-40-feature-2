@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import API_PREFIX
 from .db import init_db
-from .routers import auth, catalog, probability, records, surveys
+from .routers import auth, catalog, probability, records, surveys, trends
 
 
 @asynccontextmanager
@@ -19,7 +19,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="自然保护区季节调查完整性与覆盖数据服务",
     description=(
-        "交付季节调查覆盖与有效性证书数据：调查单元、规则证书、概率估计与趋势引用。"
+        "交付季节调查覆盖与有效性证书数据：调查单元、规则证书、概率估计与趋势引用；"
+        "并提供年度监测趋势可比性分析（分层标准化 + 固定点位参照序列）。"
         "服务不派发巡护任务、不预约人员器材，也不把缺口转成行动指令。"
     ),
     version="1.0.0",
@@ -34,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (auth, catalog, surveys, records, probability):
+for module in (auth, catalog, surveys, records, probability, trends):
     app.include_router(module.router, prefix=API_PREFIX)
 
 

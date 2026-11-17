@@ -22,12 +22,14 @@ from .models import (
     RecordRevision,
     RulebookVersion,
     Station,
+    StationVersion,
     SurveyRun,
     SurveyUnit,
     TrendReference,
     utcnow,
 )
 from .probability import estimate as probability_estimate
+from .trends import mark_analyses_stale
 from .utils import canonical_hash, local_date, parse_dt
 
 
@@ -382,6 +384,7 @@ def revise_determination(
     db.flush()
     previous.status = "superseded"
     previous.superseded_by_id = new.id
+    db.flush()  # the reassembly below must read the superseded status, not stale active rows
     unit_date = local_date(_trusted_event_time(db, material))
     affected = list(
         db.execute(
@@ -440,7 +443,103 @@ def revise_determination(
                 },
             )
         )
+    if refreshed:
+        # Interpretation revisions change observation counts: any trend analysis
+        # consuming these units must be recomputed (numerator and denominator
+        # are rebuilt together from current evidence, never patched in place).
+        mark_analyses_stale(
+            db,
+            unit_ids=[u.id for u in refreshed],
+            reason=f"判读修订（判读 {previous.id} → {new.id}）：{reason}",
+            factor="interpretation",
+            actor=actor,
+        )
     return new, refreshed
+
+
+def revoke_determination(
+    db: Session, determination_id: int, *, reason: str, actor: str
+) -> tuple[Determination, list[SurveyUnit]]:
+    """Revoke a determination: it stops counting as evidence everywhere.
+
+    The row is kept (status ``revoked``) so historical briefs can still
+    reproduce the inputs that included it; current assemblies drop it.
+    """
+    previous = db.get(Determination, determination_id)
+    if previous is None:
+        raise DomainError("判读记录不存在", 404)
+    if previous.status != "active":
+        raise DomainError("该判读已被替代或撤销，不能再次撤销")
+    previous.status = "revoked"
+    db.flush()  # reassembly must not keep counting the revoked determination
+    material = db.get(ArchiveRecord, previous.material_record_id)
+    if material is None:
+        raise DomainError("素材记录不存在", 404)
+    unit_date = local_date(_trusted_event_time(db, material))
+    affected = list(
+        db.execute(
+            select(SurveyUnit)
+            .where(SurveyUnit.station_id == material.station_id)
+            .where(SurveyUnit.unit_date == unit_date)
+            .order_by(SurveyUnit.id.desc())
+        )
+        .scalars()
+    )
+    refreshed: list[SurveyUnit] = []
+    for unit in affected:
+        if unit.rulebook_version_id is None:
+            continue
+        rulebook_version = db.get(RulebookVersion, unit.rulebook_version_id)
+        previous_gate = db.execute(
+            select(GateCheck).where(GateCheck.unit_id == unit.id).where(GateCheck.gate == "reading")
+        ).scalar_one_or_none()
+        previous_status = previous_gate.status if previous_gate else None
+        previous_present = int((previous_gate.measured or {}).get("target_present", 0)) if previous_gate else 0
+        new_built = _reassemble_unit(db, unit, rulebook_version)
+        if new_built is None:
+            continue
+        new_reading = next(g for g in new_built["gates"] if g["gate"] == "reading")
+        new_present = int(new_reading["measured"].get("target_present", 0))
+        changed = new_present != previous_present or new_reading["status"] != previous_status
+        if changed:
+            model = (
+                db.get(ProbabilityModel, unit.model_version_id) if unit.model_version_id else None
+            )
+            mark_under_review(
+                db,
+                [unit.id],
+                f"判读撤销（判读 {previous.id}，{reason}）改变了目标物种出现判定，"
+                "当前证书复审中，暂停新趋势引用；旧运行保留原证书。",
+                actor,
+                conclusions_by_unit={unit.id: _certificate_conclusions(new_built, model)},
+            )
+            refreshed.append(unit)
+        db.add(
+            AuditEvent(
+                entity_type="determination",
+                entity_id=previous.id,
+                action="determination.revoked",
+                actor=actor,
+                detail={
+                    "unit_id": unit.id,
+                    "reading_status_before": previous_status,
+                    "reading_status_after": new_reading["status"],
+                    "target_present_before": previous_present,
+                    "target_present_after": new_present,
+                    "review_triggered": changed,
+                    "reason": reason,
+                },
+            )
+        )
+    if refreshed:
+        mark_analyses_stale(
+            db,
+            unit_ids=[u.id for u in refreshed],
+            reason=f"判读撤销（判读 {previous.id}）：{reason}",
+            factor="interpretation",
+            actor=actor,
+        )
+    return previous, refreshed
 
 
 def _reassemble_unit(
@@ -654,3 +753,175 @@ def reissue_unit_certificate(db: Session, unit: SurveyUnit, actor: str) -> Certi
         )
     )
     return cert
+
+
+# ------------------------------------------------------- maintenance & archive
+def handle_maintenance_log(db: Session, record: ArchiveRecord, actor: str) -> list[int]:
+    """Propagate a (possibly late) maintenance/downtime log.
+
+    The log changes the actual operating intervals of every survey unit it
+    touches, so affected units are reassembled and every trend analysis that
+    consumes them is marked stale with factor ``effort``. Returns the unit ids
+    whose measured effort changed.
+    """
+    if record.record_type != "downtime_log":
+        return []
+    payload = record.payload or {}
+    start = parse_dt(payload["start"]) if payload.get("start") else record.event_time
+    end = parse_dt(payload["end"]) if payload.get("end") else record.event_time
+    first_day = local_date(start)
+    last_day = local_date(end)
+    days = [first_day + timedelta(days=i) for i in range((last_day - first_day).days + 1)]
+    changed_units: list[int] = []
+    for day in days:
+        units = list(
+            db.execute(
+                select(SurveyUnit)
+                .where(SurveyUnit.station_id == record.station_id)
+                .where(SurveyUnit.unit_date == day)
+                .order_by(SurveyUnit.id)
+            )
+            .scalars()
+        )
+        for unit in units:
+            if unit.rulebook_version_id is None:
+                continue
+            rulebook_version = db.get(RulebookVersion, unit.rulebook_version_id)
+            previous_gate = db.execute(
+                select(GateCheck)
+                .where(GateCheck.unit_id == unit.id)
+                .where(GateCheck.gate == "device")
+            ).scalar_one_or_none()
+            previous_status = previous_gate.status if previous_gate else None
+            previous_hours = (
+                float((previous_gate.measured or {}).get("available_hours", 0.0))
+                if previous_gate
+                else 0.0
+            )
+            built = _reassemble_unit(db, unit, rulebook_version)
+            if built is None:
+                continue
+            new_device = next(g for g in built["gates"] if g["gate"] == "device")
+            new_hours = float(new_device["measured"].get("available_hours", 0.0))
+            status_changed = new_device["status"] != previous_status
+            hours_changed = abs(new_hours - previous_hours) > 1e-6
+            if not (status_changed or hours_changed):
+                continue
+            changed_units.append(unit.id)
+            if status_changed:
+                model = (
+                    db.get(ProbabilityModel, unit.model_version_id)
+                    if unit.model_version_id
+                    else None
+                )
+                mark_under_review(
+                    db,
+                    [unit.id],
+                    f"迟到维护日志（记录 {record.external_id}）改变设备可用性判定，"
+                    "当前证书复审中；旧运行保留原证书。",
+                    actor,
+                    conclusions_by_unit={unit.id: _certificate_conclusions(built, model)},
+                )
+            db.add(
+                AuditEvent(
+                    entity_type="survey_unit",
+                    entity_id=unit.id,
+                    action="unit.maintenance_log_applied",
+                    actor=actor,
+                    detail={
+                        "record_id": record.id,
+                        "external_id": record.external_id,
+                        "device_status_before": previous_status,
+                        "device_status_after": new_device["status"],
+                        "available_hours_before": previous_hours,
+                        "available_hours_after": new_hours,
+                    },
+                )
+            )
+    if changed_units:
+        mark_analyses_stale(
+            db,
+            unit_ids=changed_units,
+            reason=f"迟到维护日志 {record.external_id} 改变有效努力量",
+            factor="effort",
+            actor=actor,
+        )
+    return changed_units
+
+
+def correct_migration_date(
+    db: Session, *, station_id: int, corrected_date: date, reason: str, actor: str
+) -> dict[str, Any]:
+    """Correct a point's migration effective date in the point archive.
+
+    Both adjacent versions are adjusted so the archive stays gap-free. Trend
+    analyses referencing units in the moved window are marked stale with factor
+    ``coverage``: segment/stratum membership is re-resolved from the corrected
+    archive on the next recompute.
+    """
+    station = db.get(Station, station_id)
+    if station is None:
+        raise DomainError("站点不存在", 404)
+    versions = sorted(station.versions, key=lambda v: v.effective_from)
+    pair: tuple[StationVersion, StationVersion] | None = None
+    for prev, nxt in zip(versions, versions[1:]):
+        if prev.effective_to is None:
+            continue
+        if prev.effective_to >= prev.effective_from and nxt.effective_from == prev.effective_to + timedelta(days=1):
+            upper = nxt.effective_to or date.max
+            if prev.effective_from < corrected_date <= upper:
+                pair = (prev, nxt)
+                break
+    if pair is None:
+        raise DomainError("未找到可纠正的相邻版本边界，或纠正日期超出版本有效期", 409)
+    prev, nxt = pair
+    old_boundary = nxt.effective_from
+    if corrected_date == old_boundary:
+        raise DomainError("纠正日期与当前迁移生效日期相同", 409)
+    prev.effective_to = corrected_date - timedelta(days=1)
+    nxt.effective_from = corrected_date
+    first_day = min(old_boundary, corrected_date)
+    last_day = max(old_boundary, corrected_date) - timedelta(days=1)
+    affected_units = list(
+        db.execute(
+            select(SurveyUnit)
+            .where(SurveyUnit.station_id == station.id)
+            .where(SurveyUnit.unit_date >= first_day)
+            .where(SurveyUnit.unit_date <= last_day)
+        )
+        .scalars()
+    )
+    db.add(
+        AuditEvent(
+            entity_type="station",
+            entity_id=station.id,
+            action="station.migration_date_corrected",
+            actor=actor,
+            detail={
+                "station_code": station.code,
+                "version_before": prev.version_number,
+                "version_after": nxt.version_number,
+                "old_effective_from": old_boundary.isoformat(),
+                "corrected_effective_from": corrected_date.isoformat(),
+                "reason": reason,
+                "affected_unit_ids": [u.id for u in affected_units],
+            },
+        )
+    )
+    stale = mark_analyses_stale(
+        db,
+        unit_ids=[u.id for u in affected_units],
+        reason=(
+            f"迁点日期纠正：{station.code} 迁移生效日 {old_boundary.isoformat()} → "
+            f"{corrected_date.isoformat()}（{reason}）"
+        ),
+        factor="coverage",
+        actor=actor,
+    )
+    return {
+        "station_code": station.code,
+        "old_effective_from": old_boundary.isoformat(),
+        "corrected_effective_from": corrected_date.isoformat(),
+        "affected_unit_ids": [u.id for u in affected_units],
+        "stale_analysis_ids": [a.id for a in stale],
+    }

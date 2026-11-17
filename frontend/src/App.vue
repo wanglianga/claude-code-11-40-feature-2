@@ -50,6 +50,9 @@ function onLogout() {
         <router-link to="/trends" :class="{ active: route.name === 'trends' }">
           <span class="nav-dot"></span>趋势输入清单
         </router-link>
+        <router-link to="/trend-analysis" :class="{ active: route.name === 'trend-analysis' || route.name === 'trend-analysis-detail' }">
+          <span class="nav-dot"></span>年度趋势对比
+        </router-link>
         <router-link to="/trace" :class="{ active: route.name === 'trace' }">
           <span class="nav-dot"></span>单元回溯链
         </router-link>

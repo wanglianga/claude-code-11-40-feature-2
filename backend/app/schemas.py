@@ -71,3 +71,30 @@ class RevokeIn(BaseModel):
 
 class ConflictResolveIn(BaseModel):
     resolution: str = Field(min_length=1, max_length=1000)
+
+
+class AnnualPlanPointIn(BaseModel):
+    station_id: int
+    role: Literal["core", "expansion", "exploration"] = "expansion"
+    note: str = ""
+
+
+class AnnualPlanIn(BaseModel):
+    plan_code: str = Field(min_length=1, max_length=64)
+    year: int = Field(ge=2000, le=2100)
+    season_code: str = Field(min_length=1, max_length=32)
+    label: str = Field(min_length=1, max_length=128)
+    target_species: list[dict[str, Any]] = Field(default_factory=list)
+    points: list[AnnualPlanPointIn] = Field(default_factory=list)
+    note: str = ""
+
+
+class TrendAnalysisIn(BaseModel):
+    species_code: str = Field(min_length=1, max_length=64)
+    plan_ids: list[int] = Field(min_length=2)
+    label: str = Field(min_length=1, max_length=128)
+
+
+class MigrationCorrectionIn(BaseModel):
+    corrected_date: str = Field(min_length=10, max_length=10)
+    reason: str = Field(min_length=1, max_length=1000)

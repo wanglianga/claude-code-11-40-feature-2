@@ -361,3 +361,229 @@ export interface ArchiveRecord {
   determinations?: Determination[]
   used_by_units?: number[]
 }
+
+// ---------- 年度趋势可比性分析 ----------
+export interface AnnualPlanPoint {
+  id: number
+  station_id: number
+  station_code: string
+  station_name: string
+  role: 'core' | 'expansion' | 'exploration'
+  role_label: string
+  note: string
+}
+
+export interface AnnualPlan {
+  id: number
+  plan_code: string
+  year: number
+  season_code: string
+  label: string
+  target_species: Array<{
+    code: string
+    name: string
+    activity?: string
+    daily_windows?: string[][]
+    min_detections?: number
+  }>
+  status: string
+  note: string
+  points: AnnualPlanPoint[]
+  created_by: string
+  created_at: string
+}
+
+export interface TrendStaleReason {
+  reason: string
+  factor: 'coverage' | 'effort' | 'interpretation'
+  affected_strata: string[]
+  affected_years: number[]
+  unit_ids: number[]
+  actor: string
+  at: string
+}
+
+export interface TrendAnalysis {
+  id: number
+  analysis_code: string
+  label: string
+  species_code: string
+  species_name: string
+  method: string
+  plan_ids: number[]
+  years: number[]
+  status: 'completed' | 'stale'
+  status_label: string
+  stale_reasons: TrendStaleReason[]
+  current_brief_id: number | null
+  current_brief_version: number | null
+  trend_direction: string | null
+  trend_slope_per_year: number | null
+  created_by: string
+  created_at: string
+}
+
+export interface TrendYearly {
+  year: number
+  effort_days: number
+  observations: number
+  raw_rate: number | null
+  standardized_rate: number | null
+  se: number
+  interval: [number, number] | null
+  included_units: number
+}
+
+export interface TrendStratum {
+  stratum_key: string
+  habitat: string
+  elevation_band: string
+  common: boolean
+  weight: number
+  coverage_flag: 'adequate' | 'insufficient_effort'
+  years_present: number[]
+  per_year: Record<string, { effort_days: number; observations: number; rate: number | null } | null>
+}
+
+export interface TrendDecomposition {
+  note: string
+  per_year: Array<{
+    year: number
+    before: number
+    after: number
+    delta_total: number
+    delta_coverage: number
+    delta_effort: number
+    delta_interpretation: number
+  }>
+  slope: {
+    before: number
+    after: number
+    delta_coverage: number
+    delta_effort: number
+    delta_interpretation: number
+  }
+  changed_units: Array<{
+    unit_id: number
+    station_code: string
+    year: number
+    unit_date: string
+    factors: string[]
+    before: Record<string, any> | null
+    after: Record<string, any> | null
+  }>
+}
+
+export interface TrendResults {
+  method: string
+  method_label: string
+  species: { code: string; name: string; activity: string; daily_windows: string[][] }
+  years: number[]
+  yearly: TrendYearly[]
+  trend: {
+    slope_per_year: number | null
+    slope_interval: [number, number] | null
+    direction: string
+    interpretation: string
+  }
+  strata: TrendStratum[]
+  insufficient_ranges: Array<{
+    stratum_key: string
+    habitat: string
+    elevation_band: string
+    years_present: number[]
+    missing_years: number[]
+    reason: string
+  }>
+  fixed_point_series: {
+    note: string
+    points: string[]
+    yearly: Array<{ year: number; effort_days: number; observations: number; rate: number | null; units: number }>
+    slope_per_year: number | null
+  }
+  independent_observations: Array<{
+    year: number
+    station_code: string
+    station_name: string
+    effort_days: number
+    observations: number
+    units: number
+    note: string
+  }>
+  excluded_unit_count: number
+  warnings: string[]
+  disclaimers: string[]
+  decomposition?: TrendDecomposition
+  recomputed_for?: TrendStaleReason[]
+}
+
+export interface TrendUnitInput {
+  unit_id: number
+  year: number
+  station_id: number
+  station_code: string
+  station_name: string
+  unit_date: string
+  station_version_id: number | null
+  version_number: number | null
+  segment_key: string
+  point_role: string
+  stratum_key: string
+  habitat: string
+  elevation_band: string
+  included: boolean
+  reasons: string[]
+  effort_days: number
+  observation_count: number
+  weight: number
+  certificate_id: number | null
+  certificate_no: string
+  determination_ids: number[]
+  material_ids: number[]
+  excluded_materials: Array<{ record_id: number; external_id: string; reason: string }>
+}
+
+export interface TrendBrief {
+  id: number
+  analysis_id: number
+  version: number
+  status: 'current' | 'superseded'
+  input_hash: string
+  note: string
+  created_by: string
+  created_at: string
+  inputs?: { plans: Array<Record<string, any>>; units: TrendUnitInput[]; generated_at: string }
+  results?: TrendResults
+}
+
+export interface TrendAnalysisDetail extends TrendAnalysis {
+  brief: TrendBrief | null
+}
+
+export interface TrendUnitRow {
+  id: number
+  analysis_id: number
+  unit_id: number
+  year: number
+  unit_date: string | null
+  station_id: number
+  station_code: string
+  station_version_id: number | null
+  segment_key: string
+  point_role: string
+  point_role_label: string
+  stratum_key: string
+  habitat: string
+  elevation_band: string
+  included: boolean
+  reasons: string[]
+  effort_days: number
+  observation_count: number
+  weight: number
+  certificate_id: number | null
+  certificate_no: string
+  determination_ids: number[]
+  material_ids: number[]
+  excluded_materials: Array<{ record_id: number; external_id: string; reason: string }>
+}
+

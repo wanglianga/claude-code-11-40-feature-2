@@ -80,6 +80,8 @@ class StationVersion(Base):
     centroid_lon: Mapped[float] = mapped_column(Float)
     elevation_min_m: Mapped[float] = mapped_column(Float)
     elevation_max_m: Mapped[float] = mapped_column(Float)
+    habitat: Mapped[str] = mapped_column(String(64), default="")
+    coord_precision_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     effective_from: Mapped[date] = mapped_column(Date)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     change_reason: Mapped[str] = mapped_column(Text, default="")
@@ -193,7 +195,7 @@ class Determination(Base):
     confidence: Mapped[float] = mapped_column(Float)
     analyst: Mapped[str] = mapped_column(String(64), default="")
     revision: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String(32), default="active")  # active | superseded
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active | superseded | revoked
     superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("determinations.id"), nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -367,4 +369,144 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(64))
     actor: Mapped[str] = mapped_column(String(64))
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AnnualSurveyPlan(Base):
+    """Annual survey plan: which points are surveyed this season and for which species.
+
+    Target species entries carry the species' daily surveyable windows so effort can
+    be computed against the hours the species is actually detectable, not against a
+    generic 24h device day.
+    """
+
+    __tablename__ = "annual_survey_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_code: Mapped[str] = mapped_column(String(64), unique=True)
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    season_code: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(128))
+    target_species: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active | retired
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    points: Mapped[list["AnnualSurveyPlanPoint"]] = relationship(
+        back_populates="plan", order_by="AnnualSurveyPlanPoint.id"
+    )
+
+
+class AnnualSurveyPlanPoint(Base):
+    """One surveyed point in an annual plan.
+
+    role: core (连续固定点) | expansion (样线扩充点) | exploration (新增探索点).
+    Exploration points are published as independent observations only and never
+    enter the cross-year trend.
+    """
+
+    __tablename__ = "annual_survey_plan_points"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "station_id", name="uq_plan_point"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("annual_survey_plans.id"), index=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("stations.id"))
+    role: Mapped[str] = mapped_column(String(32), default="expansion")
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    plan: Mapped[AnnualSurveyPlan] = relationship(back_populates="points")
+    station: Mapped[Station] = relationship()
+
+
+class TrendAnalysis(Base):
+    """A multi-year comparability analysis for one species.
+
+    status: completed | stale. Revisions to maintenance logs, migration dates or
+    determinations mark the analysis stale (待重算) with the affected strata/years
+    recorded in stale_reasons; the current brief keeps serving its frozen inputs
+    until a recompute produces a new brief version.
+    """
+
+    __tablename__ = "trend_analyses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_code: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(128))
+    species_code: Mapped[str] = mapped_column(String(64), index=True)
+    species_name: Mapped[str] = mapped_column(String(128), default="")
+    method: Mapped[str] = mapped_column(String(64), default="stratified_standardization")
+    plan_ids: Mapped[list[int]] = mapped_column(JSONB)
+    years: Mapped[list[int]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(32), default="completed")
+    stale_reasons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    current_brief_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TrendAnalysisUnit(Base):
+    """Current-brief input row: one survey unit's place in the analysis.
+
+    Kept relational (not only inside the brief JSON) so that revisions can find
+    affected strata and year comparisons by following unit/station references.
+    Rows are replaced on every recompute; historical inputs stay frozen inside
+    their TrendBrief.
+    """
+
+    __tablename__ = "trend_analysis_units"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "unit_id", name="uq_trend_analysis_unit"),
+        Index("ix_trend_unit_refs", "analysis_id", "station_id", "year"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("trend_analyses.id"), index=True)
+    unit_id: Mapped[int] = mapped_column(ForeignKey("survey_units.id"), index=True)
+    year: Mapped[int] = mapped_column(Integer)
+    unit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("stations.id"))
+    station_code: Mapped[str] = mapped_column(String(32))
+    station_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    segment_key: Mapped[str] = mapped_column(String(64), default="")
+    point_role: Mapped[str] = mapped_column(String(32), default="expansion")
+    stratum_key: Mapped[str] = mapped_column(String(128), default="")
+    habitat: Mapped[str] = mapped_column(String(64), default="")
+    elevation_band: Mapped[str] = mapped_column(String(32), default="")
+    included: Mapped[bool] = mapped_column(Boolean, default=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    effort_days: Mapped[float] = mapped_column(Float, default=0.0)
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+    weight: Mapped[float] = mapped_column(Float, default=0.0)
+    certificate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    certificate_no: Mapped[str] = mapped_column(String(64), default="")
+    determination_ids: Mapped[list[int]] = mapped_column(JSONB, default=list)
+    material_ids: Mapped[list[int]] = mapped_column(JSONB, default=list)
+    excluded_materials: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+
+
+class TrendBrief(Base):
+    """One frozen edition of an analysis' inputs and results.
+
+    Old briefs are never mutated: they keep the exact per-unit inputs (effort,
+    observations, certificate numbers, determination ids) that produced their
+    results, so a historical brief can always reproduce its own inputs.
+    """
+
+    __tablename__ = "trend_briefs"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "version", name="uq_trend_brief_version"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("trend_analyses.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="current")  # current | superseded
+    input_hash: Mapped[str] = mapped_column(String(64))
+    inputs: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    results: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

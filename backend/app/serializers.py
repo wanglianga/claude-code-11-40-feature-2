@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import RECORD_TYPE_LABELS, STATUS_LABELS
+from .config import POINT_ROLE_LABELS, RECORD_TYPE_LABELS, STATUS_LABELS, TREND_STATUS_LABELS
 from .models import (
+    AnnualSurveyPlan,
     ArchiveRecord,
     AuditEvent,
     Certificate,
@@ -20,6 +21,9 @@ from .models import (
     StationVersion,
     SurveyRun,
     SurveyUnit,
+    TrendAnalysis,
+    TrendAnalysisUnit,
+    TrendBrief,
     TrendReference,
     Zone,
 )
@@ -47,6 +51,8 @@ def station_version_out(version: StationVersion) -> dict[str, Any]:
         "centroid": {"lat": version.centroid_lat, "lon": version.centroid_lon},
         "elevation_min_m": version.elevation_min_m,
         "elevation_max_m": version.elevation_max_m,
+        "habitat": version.habitat,
+        "coord_precision_m": version.coord_precision_m,
         "effective_from": version.effective_from.isoformat(),
         "effective_to": iso(version.effective_to),
         "change_reason": version.change_reason,
@@ -327,4 +333,103 @@ def user_out(user) -> dict[str, Any]:
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+    }
+
+
+def plan_point_out(point) -> dict[str, Any]:
+    station = point.station
+    return {
+        "id": point.id,
+        "station_id": point.station_id,
+        "station_code": station.code if station else None,
+        "station_name": station.name if station else None,
+        "role": point.role,
+        "role_label": POINT_ROLE_LABELS.get(point.role, point.role),
+        "note": point.note,
+    }
+
+
+def annual_plan_out(plan: AnnualSurveyPlan) -> dict[str, Any]:
+    return {
+        "id": plan.id,
+        "plan_code": plan.plan_code,
+        "year": plan.year,
+        "season_code": plan.season_code,
+        "label": plan.label,
+        "target_species": plan.target_species,
+        "status": plan.status,
+        "note": plan.note,
+        "points": [plan_point_out(p) for p in plan.points],
+        "created_by": plan.created_by,
+        "created_at": iso(plan.created_at),
+    }
+
+
+def trend_analysis_out(analysis: TrendAnalysis, brief: TrendBrief | None = None) -> dict[str, Any]:
+    results = brief.results if brief else {}
+    trend = (results or {}).get("trend") or {}
+    return {
+        "id": analysis.id,
+        "analysis_code": analysis.analysis_code,
+        "label": analysis.label,
+        "species_code": analysis.species_code,
+        "species_name": analysis.species_name,
+        "method": analysis.method,
+        "plan_ids": analysis.plan_ids,
+        "years": analysis.years,
+        "status": analysis.status,
+        "status_label": TREND_STATUS_LABELS.get(analysis.status, analysis.status),
+        "stale_reasons": analysis.stale_reasons or [],
+        "current_brief_id": analysis.current_brief_id,
+        "current_brief_version": brief.version if brief else None,
+        "trend_direction": trend.get("direction"),
+        "trend_slope_per_year": trend.get("slope_per_year"),
+        "created_by": analysis.created_by,
+        "created_at": iso(analysis.created_at),
+    }
+
+
+def trend_brief_out(brief: TrendBrief, include_payload: bool = False) -> dict[str, Any]:
+    data = {
+        "id": brief.id,
+        "analysis_id": brief.analysis_id,
+        "version": brief.version,
+        "status": brief.status,
+        "input_hash": brief.input_hash,
+        "note": brief.note,
+        "created_by": brief.created_by,
+        "created_at": iso(brief.created_at),
+    }
+    if include_payload:
+        data["inputs"] = brief.inputs
+        data["results"] = brief.results
+    return data
+
+
+def trend_unit_out(row: TrendAnalysisUnit) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "analysis_id": row.analysis_id,
+        "unit_id": row.unit_id,
+        "year": row.year,
+        "unit_date": row.unit_date.isoformat() if row.unit_date else None,
+        "station_id": row.station_id,
+        "station_code": row.station_code,
+        "station_version_id": row.station_version_id,
+        "segment_key": row.segment_key,
+        "point_role": row.point_role,
+        "point_role_label": POINT_ROLE_LABELS.get(row.point_role, row.point_role),
+        "stratum_key": row.stratum_key,
+        "habitat": row.habitat,
+        "elevation_band": row.elevation_band,
+        "included": row.included,
+        "reasons": row.reasons,
+        "effort_days": row.effort_days,
+        "observation_count": row.observation_count,
+        "weight": row.weight,
+        "certificate_id": row.certificate_id,
+        "certificate_no": row.certificate_no,
+        "determination_ids": row.determination_ids,
+        "material_ids": row.material_ids,
+        "excluded_materials": row.excluded_materials,
     }

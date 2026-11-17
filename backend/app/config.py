@@ -43,3 +43,25 @@ RECORD_TYPE_LABELS = {
     "station_metadata": "站点元数据",
     "time_calibration": "时间校准",
 }
+
+# ---- 年度趋势可比性分析 ----
+POINT_ROLE_LABELS = {
+    "core": "连续固定点",
+    "expansion": "样线扩充点",
+    "exploration": "新增探索点",
+}
+
+TREND_STATUS_LABELS = {
+    "completed": "已完成",
+    "stale": "待重算",
+}
+
+# 趋势变化分解的三类因子：覆盖（点位/分层变化）、努力量（有效调查时段）、判读（观测次数）。
+TREND_FACTOR_LABELS = {
+    "coverage": "覆盖",
+    "effort": "努力量",
+    "interpretation": "判读",
+}
+
+# 分层覆盖不足阈值：层内有效努力量低于该值时，只给出大不确定范围，不进入标准化。
+TREND_MIN_STRATUM_EFFORT_DAYS = 2.0

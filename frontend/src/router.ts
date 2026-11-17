@@ -12,6 +12,8 @@ const router = createRouter({
     { path: '/rulebooks', name: 'rulebooks', component: () => import('./views/RulebooksView.vue') },
     { path: '/conflicts', name: 'conflicts', component: () => import('./views/ConflictsView.vue') },
     { path: '/trends', name: 'trends', component: () => import('./views/TrendsView.vue') },
+    { path: '/trend-analysis', name: 'trend-analysis', component: () => import('./views/TrendAnalysisListView.vue') },
+    { path: '/trend-analysis/:id(\\d+)', name: 'trend-analysis-detail', component: () => import('./views/TrendAnalysisDetailView.vue') },
     { path: '/trace', name: 'trace', component: () => import('./views/TraceView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
